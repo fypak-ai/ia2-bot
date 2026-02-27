@@ -5,15 +5,16 @@ import requests
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-# ── Config ──────────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 SLACK_BOT_TOKEN  = os.environ["SLACK_BOT_TOKEN"]
 SLACK_APP_TOKEN  = os.environ["SLACK_APP_TOKEN"]
 OPENROUTER_KEY   = os.environ["OPENROUTER_API_KEY"]
 TARGET_CHANNEL   = os.environ.get("TARGET_CHANNEL_ID", "C0AH9ADCTUK")  # #ia2
-DEFAULT_MODEL    = os.environ.get("DEFAULT_MODEL", "openai/gpt-4o")
+DEFAULT_MODEL    = os.environ.get("DEFAULT_MODEL", "meta-llama/llama-3.2-3b-instruct:free")
+FALLBACK_MODEL   = "meta-llama/llama-3.2-3b-instruct:free"
 OPENROUTER_URL   = "https://openrouter.ai/api/v1/chat/completions"
 
-# ── Model alias map ─────────────────────────────────────────────────────────
+# ── Model alias map ───────────────────────────────────────────────────────────
 ALIAS_MAP = {
     "gpt-4o":            "openai/gpt-4o",
     "gpt-4o-mini":       "openai/gpt-4o-mini",
@@ -31,7 +32,11 @@ ALIAS_MAP = {
     "mistral-small":     "mistralai/mistral-small",
     "qwen":              "qwen/qwen-2.5-72b-instruct",
     "llama-3.2-3b":      "meta-llama/llama-3.2-3b-instruct:free",
-    "gemma2-9b":         "google/gemma-2-9b-it:free",
+    "gemma-2-9b":        "google/gemma-2-9b-it:free",
+    # modelos gratuitos adicionais
+    "gemma3":            "google/gemma-3-27b-it:free",
+    "mistral-7b":        "mistralai/mistral-7b-instruct:free",
+    "phi-3":             "microsoft/phi-3-medium-128k-instruct:free",
 }
 
 app = App(token=SLACK_BOT_TOKEN)
@@ -65,6 +70,16 @@ def call_openrouter(model: str, prompt: str) -> str:
         "messages": [{"role": "user", "content": prompt}],
     }
     resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=120)
+
+    # Se der 402 (créditos insuficientes) e o modelo não for gratuito, usa fallback
+    if resp.status_code == 402 and not model.endswith(":free"):
+        payload["model"] = FALLBACK_MODEL
+        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=120)
+        resp.raise_for_status()
+        data = resp.json()
+        answer = data["choices"][0]["message"]["content"]
+        return f"_{model} requer créditos — usando {FALLBACK_MODEL}_\n\n{answer}"
+
     resp.raise_for_status()
     data = resp.json()
     return data["choices"][0]["message"]["content"]
@@ -78,10 +93,6 @@ def handle_message(message, say, client):
     # Ignore bots and thread replies (avoid loops)
     if message.get("bot_id") or message.get("subtype"):
         return
-    # Ignore messages that are already threaded replies to bot messages
-    # (optional: allow threading by removing the line below)
-    # if message.get("thread_ts") and message.get("thread_ts") != message.get("ts"):
-    #     return
 
     text = message.get("text", "").strip()
     if not text:
@@ -106,7 +117,7 @@ def handle_message(message, say, client):
             ts=thinking["ts"],
         )
         say(
-            text=f"🤖 *{model_name}*\n\n{answer}",
+            text=f"💬 *{model_name}*\n\n{answer}",
             thread_ts=thread_ts,
         )
     except Exception as e:
